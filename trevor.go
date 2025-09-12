@@ -1,0 +1,239 @@
+package main
+
+import (
+	"context"
+	"log"
+	"math/rand"
+	"net"
+	"strconv"
+	"sync"
+	"time"
+
+	pb "example/example_goproto/pb"
+
+	"github.com/streadway/amqp"
+	"google.golang.org/grpc"
+)
+
+const (
+	grpcAddr = ":50052"
+	amqpURL  = "amqp://guest:guest@localhost:5672/"
+	exchange = "stars.exchange"
+	queue    = "stars.trevor.q"
+	rk       = "stars.trevor"
+	turnMs   = 100
+)
+
+type server struct {
+	pb.UnimplementedServicioDistraccionesServer
+	pb.UnimplementedCharacterServiceServer
+
+	mu         sync.Mutex
+	state      pb.MissionState
+	stars      int
+	turnsDone  int
+	totalTurns int
+	earnedLoot int64
+	detail     string
+	running    context.CancelFunc
+
+	successProb int
+	baseLoot    int64
+
+	furyActive bool // Trevor: extiende límite a 7 si llega a 5
+}
+
+func (s *server) StartHeist(ctx context.Context, req *pb.StartHeistRequest) (*pb.Ack, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.state == pb.MissionState_STATE_IN_PROGRESS {
+		return &pb.Ack{Ok: true, Msg: "Ya en progreso"}, nil
+	}
+
+	s.state = pb.MissionState_STATE_IN_PROGRESS
+	s.stars = 0
+	s.turnsDone = 0
+	s.totalTurns = 200 - int(req.SuccessProb)
+	if s.totalTurns < 1 {
+		s.totalTurns = 1
+	}
+	s.earnedLoot = 0
+	s.detail = "Golpe en curso"
+	s.successProb = int(req.SuccessProb)
+	s.baseLoot = req.BaseLoot
+	s.furyActive = false
+
+	ctxRun, cancel := context.WithCancel(context.Background())
+	s.running = cancel
+
+	go s.run(ctxRun)
+
+	return &pb.Ack{Ok: true, Msg: "Trevor: golpe iniciado"}, nil
+}
+
+func (s *server) run(ctx context.Context) {
+	conn, err := amqp.Dial(amqpURL)
+	if err != nil {
+		s.fail("AMQP dial error")
+		return
+	}
+	defer conn.Close()
+
+	ch, err := conn.Channel()
+	if err != nil {
+		s.fail("AMQP channel error")
+		return
+	}
+	defer ch.Close()
+
+	if err := ch.ExchangeDeclare(exchange, "direct", true, false, false, false, nil); err != nil {
+		s.fail("AMQP exchange declare error")
+		return
+	}
+
+	q, err := ch.QueueDeclare(queue, true, false, false, false, nil)
+	if err != nil {
+		s.fail("AMQP queue declare error")
+		return
+	}
+	if err := ch.QueueBind(q.Name, rk, exchange, false, nil); err != nil {
+		s.fail("AMQP bind error")
+		return
+	}
+
+	msgs, err := ch.Consume(q.Name, "", true, false, false, false, nil)
+	if err != nil {
+		s.fail("AMQP consume error")
+		return
+	}
+
+	go func() {
+		for m := range msgs {
+			val, _ := strconv.Atoi(string(m.Body))
+			s.mu.Lock()
+			s.stars = val
+			// Furia: al llegar a 5 estrellas
+			if s.stars >= 5 {
+				s.furyActive = true
+			}
+			s.mu.Unlock()
+		}
+	}()
+
+	ticker := time.NewTicker(time.Duration(turnMs) * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.mu.Lock()
+			if s.state != pb.MissionState_STATE_IN_PROGRESS {
+				s.mu.Unlock()
+				return
+			}
+			limit := 5
+			if s.furyActive {
+				limit = 7
+			}
+			if s.stars >= limit {
+				s.state = pb.MissionState_STATE_FAILED
+				s.detail = "Demasiadas estrellas"
+				s.mu.Unlock()
+				return
+			}
+			s.turnsDone++
+			if s.turnsDone >= s.totalTurns {
+				s.state = pb.MissionState_STATE_SUCCESS
+				s.detail = "Golpe completado"
+				s.earnedLoot += s.baseLoot
+				s.mu.Unlock()
+				return
+			}
+			s.mu.Unlock()
+		}
+	}
+}
+
+func (s *server) GetStatus(ctx context.Context, _ *pb.GetStatusRequest) (*pb.GetStatusResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return &pb.GetStatusResponse{
+		State:      s.state,
+		Stars:      int32(s.stars),
+		TurnsDone:  int32(s.turnsDone),
+		TotalTurns: int32(s.totalTurns),
+		EarnedLoot: s.earnedLoot,
+		Detail:     s.detail,
+	}, nil
+}
+
+func (s *server) fail(reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state = pb.MissionState_STATE_FAILED
+	s.detail = reason
+}
+
+func (s *server) EmpezarDistraccion(ctx context.Context, req *pb.SolicitudDistraccion) (*pb.ResultadoDistraccion, error) {
+	log.Printf("Iniciando distracción para el personaje: Trevor\n")
+
+	// Calculamos la cantidad de turnos necesarios
+	turnos := 200 - int(req.ProbabilidadDeExito) // Asumo que ProbabilidadDeExito es parte de la solicitud
+	log.Printf("Total de turnos para Trevor: %d\n", turnos)
+
+	var success bool = true
+	var reason string = "Distracción completada con éxito"
+
+	// Mitad de los turnos para evaluar el riesgo del 10%
+	mitad := turnos / 2
+
+	for i := 1; i <= turnos; i++ {
+		// Si estamos en la mitad, chequeamos el evento aleatorio
+		if i == mitad {
+			if rand.Intn(100) < 10 { // 10% de probabilidad
+				success = false
+				reason = "Trevor esta muy borracho, distracción fallida"
+				log.Printf("Turno %d: %s\n", i, reason)
+				break // Terminamos la misión
+			}
+			log.Printf("Turno %d: Trevor sigue en pie, continuamos...\n", i)
+		}
+
+		log.Printf("Turno %d completado exitosamente", i)
+	}
+
+	// Si falló antes de completar todos los turnos, mostramos razón
+	if !success {
+		log.Printf("La distracción de %s ha fallado.\n", req.Character)
+	} else {
+		log.Printf("La distracción de %s ha sido exitosa.\n", req.Character)
+	}
+
+	result := &pb.ResultadoDistraccion{
+		Success: success,
+		Reason:  reason,
+	}
+
+	return result, nil
+}
+
+func main() {
+	rand.Seed(time.Now().UnixNano())
+
+	lis, err := net.Listen("tcp", grpcAddr)
+	if err != nil {
+		log.Fatalf("failed to listen: %v", err)
+	}
+
+	s := grpc.NewServer()
+	pb.RegisterServicioDistraccionesServer(s, &server{})
+	pb.RegisterCharacterServiceServer(s, &server{state: pb.MissionState_STATE_IDLE})
+
+	log.Println("Trevor's server ready on :50052")
+	if err := s.Serve(lis); err != nil {
+		log.Fatalf("failed to serve: %v", err)
+	}
+}

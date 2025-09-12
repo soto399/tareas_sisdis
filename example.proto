@@ -1,0 +1,114 @@
+syntax = "proto3";
+
+package heist;
+// Importante: apunta el go_package al módulo local que crearás (ver pasos)
+option go_package = "./example_goproto/pb";
+
+message PedirOfertaSolicitud {
+  string client_id = 1;
+}
+
+message Oferta {
+  int32 loot = 1;               // botín base en USD
+  int32 success_franklin = 2;   // 0-100 %
+  int32 success_trevor = 3;     // 0-100 %
+  int32 police_risk = 4;        // 0-100 %
+}
+
+message PedirOfertaRespuesta {
+  bool available = 1;   // 90% chances de que haya oferta
+  Oferta offer = 2;      // presente si available = true
+  string message = 3;
+}
+
+enum RespuestaDecision {
+  ACCEPT = 0;
+  REJECT = 1;
+}
+
+message SolicitudDecision {
+  string client_id = 1;
+  RespuestaDecision decision = 2;
+  Oferta offer = 3; // opcional, informativo
+}
+
+message ConfirmacionDecision {
+  string message = 1;
+  int32 consecutive_rejects = 2;
+}
+
+service Lester {
+  rpc PedirOferta(PedirOfertaSolicitud) returns (PedirOfertaRespuesta);
+  rpc NotificarDecision(SolicitudDecision) returns (ConfirmacionDecision);
+  rpc StartHeistNotifications(StartHeistNotificationsRequest) returns (Ack);
+  rpc StopHeistNotifications(StopHeistNotificationsRequest) returns (Ack);
+}
+
+service ServicioDistracciones {
+  rpc EmpezarDistraccion(SolicitudDistraccion) returns (ResultadoDistraccion);
+}
+
+message SolicitudDistraccion {
+  string client_id = 1;
+  string character = 2; // Franklin or Trevor
+  int32 probabilidad_de_exito = 3; // 0-100 %
+}
+
+message ResultadoDistraccion {
+  bool success = 1;
+  string reason = 2;
+}
+
+// ====== Tipos comunes ======
+enum Character {
+  CHARACTER_UNSPECIFIED = 0;
+  FRANKLIN = 1;
+  TREVOR = 2;
+}
+
+enum MissionState {
+  STATE_UNKNOWN = 0;
+  STATE_IDLE = 1;
+  STATE_IN_PROGRESS = 2;
+  STATE_SUCCESS = 3;
+  STATE_FAILED = 4;
+}
+
+// ====== LesterService: control de estrellas (RabbitMQ publisher) ======
+message StartHeistNotificationsRequest {
+  Character character = 1;   // a quién le va a publicar estrellas
+  int32 police_risk = 2;     // 0..100 (frecuencia = 100 - riesgo)
+}
+
+message StopHeistNotificationsRequest {
+  Character character = 1;
+}
+
+message Ack {
+  bool ok = 1;
+  string msg = 2;
+}
+
+// ====== CharacterService: ejecución del golpe + estado ======
+message StartHeistRequest {
+  Character character = 1;   // redundante pero útil para logging
+  int32 success_prob = 2;    // 0..100
+  int32 police_risk = 3;     // 0..100 (informativo para el personaje)
+  int64 base_loot = 4;       // botín base en dólares
+}
+
+message GetStatusRequest {}
+
+message GetStatusResponse {
+  MissionState state = 1;
+  int32 stars = 2;
+  int32 turns_done = 3;
+  int32 total_turns = 4;
+  int64 earned_loot = 5;       // incluye bonus de Chop si aplica
+  string detail = 6;           // texto breve razón/nota
+}
+
+service CharacterService {
+  rpc StartHeist(StartHeistRequest) returns (Ack);
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+}
