@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"math/rand"
 	"net"
@@ -21,7 +22,7 @@ const (
 	exchange = "stars.exchange"
 	queue    = "stars.franklin.q"
 	rk       = "stars.franklin"
-	turnMs   = 100
+	turnMs   = 200
 )
 
 type server struct {
@@ -226,6 +227,32 @@ func (s *server) EmpezarDistraccion(ctx context.Context, req *pb.SolicitudDistra
 	}
 
 	return result, nil
+}
+
+// GetLootTotal: devuelve earned_loot si STATE_SUCCESS, si no 0
+func (s *server) GetLootTotal(ctx context.Context, _ *pb.GetLootTotalRequest) (*pb.GetLootTotalResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state == pb.MissionState_STATE_SUCCESS {
+		return &pb.GetLootTotalResponse{TotalLoot: s.earnedLoot}, nil
+	}
+	return &pb.GetLootTotalResponse{TotalLoot: 0}, nil
+}
+
+// ReceivePayment: verifica que amount == total/4 (su parte equitativa)
+func (s *server) ReceivePayment(ctx context.Context, p *pb.Payment) (*pb.PaymentAck, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Para verificación, usamos el loot final que entregó este personaje (s.earnedLoot)
+	if s.earnedLoot <= 0 || s.state != pb.MissionState_STATE_SUCCESS {
+		return &pb.PaymentAck{Ok: false, Msg: "No corresponde pago (sin éxito)"}, nil
+	}
+	share := s.earnedLoot / 4
+	if p.Amount == share {
+		return &pb.PaymentAck{Ok: true, Msg: "Excelente! El pago es correcto."}, nil
+	}
+	return &pb.PaymentAck{Ok: false, Msg: fmt.Sprintf("Pago incorrecto. Esperaba $%d y recibí $%d", share, p.Amount)}, nil
 }
 
 func main() {

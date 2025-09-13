@@ -42,6 +42,7 @@ service Lester {
   rpc NotificarDecision(SolicitudDecision) returns (ConfirmacionDecision);
   rpc StartHeistNotifications(StartHeistNotificationsRequest) returns (Ack);
   rpc StopHeistNotifications(StopHeistNotificationsRequest) returns (Ack);
+  rpc ReceivePayment(Payment) returns (PaymentAck);
 }
 
 service ServicioDistracciones {
@@ -111,4 +112,21 @@ message GetStatusResponse {
 service CharacterService {
   rpc StartHeist(StartHeistRequest) returns (Ack);
   rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+  rpc GetLootTotal(GetLootTotalRequest) returns (GetLootTotalResponse);
+  rpc ReceivePayment(Payment) returns (PaymentAck);
+}
+
+// ====== Fase 4 ======
+message GetLootTotalRequest {}
+message GetLootTotalResponse {
+  int64 total_loot = 1;     // botín total (base + bonus Chop si aplicó)
+}
+
+message Payment {
+  int64 amount = 1;
+}
+
+message PaymentAck {
+  bool ok = 1;
+  string msg = 2;
 }

@@ -1,0 +1,24 @@
+=========================================================
+== REPORTE FINAL DE LA MISION ==
+=========================================================
+Mision: Asalto al Banco #760
+
+Resultado Global: MISION COMPLETADA CON EXITO!
+
+--- REPARTO DEL BOTIN ---
+Botin Total: $363106
+---------------------------------------------------------
+
+Pago a Franklin: $90776
+Respuesta de Franklin: "Excelente! El pago es correcto."
+
+Pago a Trevor: $90776
+Respuesta de Trevor: "Sin respuesta"
+
+Pago a Lester: $90778
+Respuesta de Lester: "Un placer hacer negocios."
+
+---------------------------------------------------------
+Saldo Final de la Operacion: $363106
+=========================================================
+						

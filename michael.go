@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	pb "example/example_goproto/pb"
@@ -16,7 +17,7 @@ const (
 	lesterAddr   = "localhost:50051"
 	franklinAddr = "localhost:50053"
 	trevorAddr   = "localhost:50052"
-	pollMs       = 300
+	pollMs       = 200
 )
 
 func aceptaSegunReglas(o *pb.Oferta) bool {
@@ -43,6 +44,13 @@ func startDistraction(client pb.ServicioDistraccionesClient, character string, p
 	}
 
 	return result, nil
+}
+
+func safeMsg(ack *pb.PaymentAck) string {
+	if ack == nil {
+		return "Sin respuesta"
+	}
+	return ack.Msg
 }
 
 func main() {
@@ -184,6 +192,13 @@ func main() {
 			defer ticker.Stop()
 
 			for {
+				<-ticker.C
+				st, err := char.GetStatus(ctx, &pb.GetStatusRequest{})
+				if err != nil {
+					log.Printf("[Michael] GetStatus error: %v", err)
+					continue
+				}
+
 				log.Printf("[Michael] Estado: %s | stars=%d | %d/%d | loot=$%d | %s",
 					st.State.String(), st.Stars, st.TurnsDone, st.TotalTurns, st.EarnedLoot, st.Detail)
 
@@ -195,6 +210,90 @@ func main() {
 					// 4) Avisar a Lester que termine de enviar estrellas
 					_, _ = client.StopHeistNotifications(ctx, &pb.StopHeistNotificationsRequest{Character: heister})
 					fmt.Println("[Michael] Lester: stop stars (éxito)")
+					// ====== FASE 4: REPARTO DEL BOTÍN (solo si Fase 2 y 3 exitosas) ======
+					// 4.1 pedir botín total al personaje del golpe
+					lootResp, err := char.GetLootTotal(ctx, &pb.GetLootTotalRequest{})
+					if err != nil {
+						log.Printf("[Michael] Error GetLootTotal: %v", err)
+						return
+					}
+					total := lootResp.TotalLoot
+					if total <= 0 {
+						log.Printf("[Michael] Botín total inválido: %d", total)
+						return
+					}
+
+					// 4.2 calcular reparto
+					share := total / 4
+					rest := total % 4
+
+					// helpers: stubs para pagarle a ambos personajes y a lester
+					// ojo: quizá el que hizo el golpe fue FRANKLIN o TREVOR; el que NO hizo, también recibe su parte
+					// prepara conexiones:
+					fConn, _ := grpc.Dial("127.0.0.1:50053", grpc.WithInsecure())
+					defer fConn.Close()
+					tConn, _ := grpc.Dial("127.0.0.1:50054", grpc.WithInsecure())
+					defer tConn.Close()
+
+					frank := pb.NewCharacterServiceClient(fConn)
+					trev := pb.NewCharacterServiceClient(tConn)
+
+					// elegir a quién pagar qué
+					// Por simplicidad: ambos personajes reciben "share"
+					var ackF, ackT *pb.PaymentAck
+					if heister == pb.Character_FRANKLIN {
+						ackF, _ = frank.ReceivePayment(ctx, &pb.Payment{Amount: share})
+						ackT, _ = trev.ReceivePayment(ctx, &pb.Payment{Amount: share})
+					} else {
+						ackT, _ = trev.ReceivePayment(ctx, &pb.Payment{Amount: share})
+						ackF, _ = frank.ReceivePayment(ctx, &pb.Payment{Amount: share})
+					}
+
+					// Lester recibe share + rest
+					ackL, _ := client.ReceivePayment(ctx, &pb.Payment{Amount: share + rest})
+
+					// 4.3 Generar Reporte.txt (formato libre; el enunciado muestra un ejemplo)
+					//    Debe incluir: resultado, botín base, botín extra (si hubo), botín total, pagos y respuestas. :contentReference[oaicite:6]{index=6}
+					report := fmt.Sprintf(
+						`=========================================================
+== REPORTE FINAL DE LA MISION ==
+=========================================================
+Mision: Asalto al Banco #%d
+
+Resultado Global: MISION COMPLETADA CON EXITO!
+
+--- REPARTO DEL BOTIN ---
+Botin Total: $%d
+---------------------------------------------------------
+
+Pago a Franklin: $%d
+Respuesta de Franklin: "%s"
+
+Pago a Trevor: $%d
+Respuesta de Trevor: "%s"
+
+Pago a Lester: $%d
+Respuesta de Lester: "%s"
+
+---------------------------------------------------------
+Saldo Final de la Operacion: $%d
+=========================================================
+						`,
+						time.Now().Unix()%10000,
+						total,
+						share, safeMsg(ackF),
+						share, safeMsg(ackT),
+						share+rest, safeMsg(ackL),
+						total,
+					)
+
+					// escribe archivo
+					if err := os.WriteFile("Reporte.txt", []byte(report), 0644); err != nil {
+						log.Printf("[Michael] Error escribiendo Reporte.txt: %v", err)
+					} else {
+						log.Printf("[Michael] Reporte.txt generado")
+					}
+
 					return
 				case pb.MissionState_STATE_FAILED:
 					log.Printf("[Michael] Golpe FALLIDO por %s. Motivo: %s",
@@ -205,7 +304,7 @@ func main() {
 				}
 			}
 
-			break // Finaliza el bucle después de la distracción
+			break // Finaliza el bucle
 
 		} else {
 			ack, err := client.NotificarDecision(context.Background(), &pb.SolicitudDecision{
